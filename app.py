@@ -1,8 +1,7 @@
 from flask import Flask, render_template_string
 from supabase import create_client, Client
 
-SUPABASE_URL = "https://vpbjmgwqodhuprpovslh.supabase.co"
-SUPABASE_KEY = "sb_publishable_iMCD5saQ85EaP6msbviM2g_XZ9DcV8t"
+
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
