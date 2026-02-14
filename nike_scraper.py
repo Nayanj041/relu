@@ -6,9 +6,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import List, Optional, Set, Tuple
+from urllib.parse import urlencode, urlparse, urlunparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.core.os_manager import ChromeType
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -124,6 +131,26 @@ class NikeScraperPH:
         if isinstance(value, (int, float)):
             return float(value)
         return self.price_to_float(str(value))
+
+    def decode_api_url(self, raw_url: str) -> str:
+        url = raw_url
+        url = url.replace("\\u0026", "&")
+        url = url.replace("\\u003d", "=")
+        url = url.replace("\\/", "/")
+        url = url.replace("https:\\/\\/", "https://")
+        return url
+
+    def extract_rollup_url(self, html: str) -> Optional[str]:
+        patterns = [
+            r"https://[^\"']+/product_feed/rollup_threads/v2\?[^\"']+",
+            r"https:\\/\\/[^\"']+\\/product_feed\\/rollup_threads\\/v2\\?[^\"']+",
+            r"/api/product_feed/rollup_threads/v2\?[^\"']+",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html)
+            if match:
+                return self.decode_api_url(match.group(0))
+        return None
 
     def build_api_params(self, anchor: int, include_filter: bool, language: str, path: str) -> List[Tuple[str, str]]:
         params = [
@@ -316,6 +343,66 @@ class NikeScraperPH:
                         anchor = 0
                         page = 1
 
+    def load_products_from_discovered_rollup(self) -> None:
+        try:
+            html = self.fetch_html(self.base_url)
+        except Exception:
+            return
+
+        discovered_url = self.extract_rollup_url(html)
+        if not discovered_url:
+            return
+
+        if discovered_url.startswith("/api/"):
+            discovered_url = "https://www.nike.com" + discovered_url
+
+        parsed = urlparse(discovered_url)
+        params = parse_qs(parsed.query)
+        params["count"] = [str(PAGE_SIZE)]
+
+        seen_urls: Set[str] = set()
+        anchor = 0
+        page = 1
+
+        while True:
+            params["anchor"] = [str(anchor)]
+            query = urlencode(params, doseq=True)
+            url = urlunparse(parsed._replace(query=query))
+
+            try:
+                response = self.session.get(url, timeout=30)
+            except Exception as exc:
+                logger.warning("Discovered rollup request failed: %s", exc)
+                break
+
+            if response.status_code != 200:
+                logger.warning("Discovered rollup status %s", response.status_code)
+                break
+
+            try:
+                payload = response.json()
+            except Exception:
+                logger.warning("Discovered rollup returned non-JSON response")
+                break
+
+            page_products = self.parse_products_from_payload(payload)
+            if not page_products:
+                break
+
+            before = len(seen_urls)
+            for product in page_products:
+                if product.Product_URL and product.Product_URL not in seen_urls:
+                    seen_urls.add(product.Product_URL)
+                    self.products.append(product)
+
+            logger.info("Discovered rollup page %s: collected %s products", page, len(seen_urls))
+            if len(seen_urls) == before:
+                break
+
+            anchor += PAGE_SIZE
+            page += 1
+            time.sleep(LISTING_DELAY)
+
     def load_products_from_browse_api(self) -> None:
         seen_urls: Set[str] = set()
         anchor = 0
@@ -393,12 +480,111 @@ class NikeScraperPH:
                     seen_urls.add(product.Product_URL)
                     self.products.append(product)
 
+    def load_products_from_selenium(self) -> None:
+        chrome_options = Options()
+        chrome_options.add_argument("--headless=new")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_argument("--user-agent=" + HEADERS["User-Agent"])
+
+        try:
+            try:
+                service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+            except Exception:
+                service = Service(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+
+            driver.get(self.base_url)
+            time.sleep(5)
+
+            last_count = 0
+            stable_rounds = 0
+            while stable_rounds < 3:
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(2)
+
+                try:
+                    load_more = driver.find_element(By.CSS_SELECTOR, "button[data-qa='load-more']")
+                    if load_more.is_displayed() and load_more.is_enabled():
+                        load_more.click()
+                        time.sleep(2)
+                except Exception:
+                    pass
+
+                cards = driver.find_elements(By.CSS_SELECTOR, "div.product-card")
+                if len(cards) == last_count:
+                    stable_rounds += 1
+                else:
+                    stable_rounds = 0
+                    last_count = len(cards)
+
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+        finally:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+        seen_urls: Set[str] = set(p.Product_URL for p in self.products if p.Product_URL)
+        cards = soup.select("div.product-card")
+        for card in cards:
+            product = Product()
+            link = card.select_one("a[href*='/t/']")
+            if link and link.get("href"):
+                href = link["href"]
+                product.Product_URL = href if href.startswith("http") else "https://www.nike.com" + href
+
+            img = card.select_one("img")
+            if img and img.get("src"):
+                product.Product_Image_URL = img["src"]
+
+            tag_elems = card.select("[class*='badge'], [class*='label']")
+            tags = []
+            for elem in tag_elems:
+                text = elem.get_text(strip=True)
+                if text and text not in tags:
+                    tags.append(text)
+            product.Product_Tagging = " | ".join(tags)
+
+            name_elem = card.select_one(".product-card__title, [data-testid='product-card__title']")
+            if name_elem:
+                product.Product_Name = name_elem.get_text(strip=True)
+
+            desc_elem = card.select_one(".product-card__subtitle, [data-testid='product-card__subtitle']")
+            if desc_elem:
+                product.Product_Description = desc_elem.get_text(strip=True)
+
+            price_lines = [line for line in card.get_text("\n", strip=True).split("\n") if "₱" in line]
+            cleaned = [self.format_price(line.replace("PHP", "").strip()) for line in price_lines]
+            if len(cleaned) >= 2:
+                values = [(self.price_to_float(p) or 0.0, p) for p in cleaned]
+                values.sort(key=lambda x: x[0])
+                product.Discount_Price = values[0][1]
+                product.Original_Price = values[-1][1]
+            elif len(cleaned) == 1:
+                product.Original_Price = cleaned[0]
+
+            colors_elem = card.select_one(".product-card__count-item")
+            if colors_elem and "color" in colors_elem.get_text(strip=True).lower():
+                product.Available_Colors = colors_elem.get_text(strip=True)
+
+            if product.Product_URL and product.Product_URL not in seen_urls:
+                seen_urls.add(product.Product_URL)
+                self.products.append(product)
+
     def load_all_products(self) -> None:
+        self.load_products_from_discovered_rollup()
         self.load_products_from_rollup_api()
         if not self.products:
             self.load_products_from_browse_api()
         if not self.products:
             self.load_products_from_html()
+        if not self.products:
+            self.load_products_from_selenium()
 
         logger.info("Finished collecting listing data: %s products", len(self.products))
 
