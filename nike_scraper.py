@@ -27,8 +27,19 @@ HEADERS = {
 
 
 ROLLUP_BASE_URL = "https://api.nike.com/product_feed/rollup_threads/v2"
-API_BASE_URL = "https://api.nike.com/cic/browse/v2"
-CONSUMER_CHANNEL_ID = "d9a5bc42-4b9c-4976-858a-f159cf99c647"
+ROLLUP_BASE_URLS = [
+    "https://api.nike.com/product_feed/rollup_threads/v2",
+    "https://www.nike.com/api/product_feed/rollup_threads/v2",
+]
+BROWSE_BASE_URLS = [
+    "https://api.nike.com/cic/browse/v2",
+    "https://www.nike.com/api/cic/browse/v2",
+]
+CHANNEL_IDS = [
+    "d9a5bc42-4b9c-4976-858a-f159cf99c647",
+    "010794e5-35fe-4e32-aaff-cd2c74f89d61",
+]
+LANGUAGES = ["en-PH", "en-GB", "en", "en-US"]
 PAGE_SIZE = 60
 LISTING_DELAY = 0.6
 DETAIL_DELAY = 0.5
@@ -114,27 +125,33 @@ class NikeScraperPH:
             return float(value)
         return self.price_to_float(str(value))
 
-    def build_api_params(self, anchor: int, include_filter: bool) -> List[Tuple[str, str]]:
+    def build_api_params(self, anchor: int, include_filter: bool, language: str, path: str) -> List[Tuple[str, str]]:
         params = [
             ("queryid", "products"),
             ("country", "PH"),
-            ("language", "en-PH"),
+            ("language", language),
             ("marketplace", "PH"),
             ("channel", "web"),
             ("count", str(PAGE_SIZE)),
             ("anchor", str(anchor)),
-            ("consumerChannelId", CONSUMER_CHANNEL_ID),
-            ("path", "/ph/w"),
+            ("consumerChannelId", CHANNEL_IDS[0]),
+            ("path", path),
         ]
         if include_filter:
             params.append(("filter", "gender:Women"))
         return params
 
-    def build_rollup_params(self, anchor: int, include_gender: bool) -> List[Tuple[str, str]]:
+    def build_rollup_params(
+        self,
+        anchor: int,
+        include_gender: bool,
+        language: str,
+        channel_id: str,
+    ) -> List[Tuple[str, str]]:
         params = [
             ("filter", "marketplace(PH)"),
-            ("filter", "language(en-PH)"),
-            ("filter", f"channelId({CONSUMER_CHANNEL_ID})"),
+            ("filter", f"language({language})"),
+            ("filter", f"channelId({channel_id})"),
             ("filter", "employeePrice(false)"),
             ("filter", "exclusiveAccess(false)"),
             ("anchor", str(anchor)),
@@ -257,88 +274,94 @@ class NikeScraperPH:
         anchor = 0
         page = 1
 
-        for include_gender in [True, False]:
-            while True:
-                params = self.build_rollup_params(anchor, include_gender)
-                try:
-                    response = self.session.get(ROLLUP_BASE_URL, params=params, timeout=30)
-                except Exception as exc:
-                    logger.warning("Rollup request failed: %s", exc)
-                    break
+        for base_url in ROLLUP_BASE_URLS:
+            for language in LANGUAGES:
+                for channel_id in CHANNEL_IDS:
+                    for include_gender in [True, False]:
+                        while True:
+                            params = self.build_rollup_params(anchor, include_gender, language, channel_id)
+                            try:
+                                response = self.session.get(base_url, params=params, timeout=30)
+                            except Exception as exc:
+                                logger.warning("Rollup request failed: %s", exc)
+                                break
 
-                if response.status_code != 200:
-                    logger.warning("Rollup status %s", response.status_code)
-                    break
+                            if response.status_code != 200:
+                                logger.warning("Rollup status %s", response.status_code)
+                                break
 
-                try:
-                    payload = response.json()
-                except Exception:
-                    logger.warning("Rollup returned non-JSON response")
-                    break
+                            try:
+                                payload = response.json()
+                            except Exception:
+                                logger.warning("Rollup returned non-JSON response")
+                                break
 
-                page_products = self.parse_products_from_payload(payload)
-                if not page_products:
-                    logger.info("Rollup returned 0 products; keys: %s", list(payload.keys()))
-                    break
+                            page_products = self.parse_products_from_payload(payload)
+                            if not page_products:
+                                logger.info("Rollup returned 0 products; keys: %s", list(payload.keys()))
+                                break
 
-                for product in page_products:
-                    if product.Product_URL and product.Product_URL not in seen_urls:
-                        seen_urls.add(product.Product_URL)
-                        self.products.append(product)
+                            for product in page_products:
+                                if product.Product_URL and product.Product_URL not in seen_urls:
+                                    seen_urls.add(product.Product_URL)
+                                    self.products.append(product)
 
-                logger.info("Rollup page %s: collected %s products", page, len(seen_urls))
-                anchor += PAGE_SIZE
-                page += 1
-                time.sleep(LISTING_DELAY)
+                            logger.info("Rollup page %s: collected %s products", page, len(seen_urls))
+                            anchor += PAGE_SIZE
+                            page += 1
+                            time.sleep(LISTING_DELAY)
 
-            if self.products:
-                break
-            anchor = 0
-            page = 1
+                        if self.products:
+                            return
+                        anchor = 0
+                        page = 1
 
     def load_products_from_browse_api(self) -> None:
         seen_urls: Set[str] = set()
         anchor = 0
         page = 1
 
-        for include_filter in [True, False]:
-            while True:
-                params = self.build_api_params(anchor, include_filter)
-                try:
-                    response = self.session.get(API_BASE_URL, params=params, timeout=30)
-                except Exception as exc:
-                    logger.warning("Browse request failed: %s", exc)
-                    break
+        for base_url in BROWSE_BASE_URLS:
+            for language in LANGUAGES:
+                for path in ["/ph/w", "/w"]:
+                    for include_filter in [True, False]:
+                        while True:
+                            params = self.build_api_params(anchor, include_filter, language, path)
+                            try:
+                                response = self.session.get(base_url, params=params, timeout=30)
+                            except Exception as exc:
+                                logger.warning("Browse request failed: %s", exc)
+                                break
 
-                if response.status_code != 200:
-                    logger.warning("Browse status %s", response.status_code)
-                    break
+                            if response.status_code != 200:
+                                logger.warning("Browse status %s", response.status_code)
+                                break
 
-                try:
-                    payload = response.json()
-                except Exception:
-                    logger.warning("Browse returned non-JSON response")
-                    break
+                            try:
+                                payload = response.json()
+                            except Exception:
+                                logger.warning("Browse returned non-JSON response")
+                                break
 
-                page_products = self.parse_products_from_payload(payload)
-                if not page_products:
-                    logger.info("Browse returned 0 products; keys: %s", list(payload.keys()))
-                    break
+                            page_products = self.parse_products_from_payload(payload)
+                            if not page_products:
+                                logger.info("Browse returned 0 products; keys: %s", list(payload.keys()))
+                                break
 
-                for product in page_products:
-                    if product.Product_URL and product.Product_URL not in seen_urls:
-                        seen_urls.add(product.Product_URL)
-                        self.products.append(product)
+                            for product in page_products:
+                                if product.Product_URL and product.Product_URL not in seen_urls:
+                                    seen_urls.add(product.Product_URL)
+                                    self.products.append(product)
 
-                logger.info("API page %s: collected %s products", page, len(seen_urls))
-                anchor += PAGE_SIZE
-                page += 1
-                time.sleep(LISTING_DELAY)
+                            logger.info("Browse page %s: collected %s products", page, len(seen_urls))
+                            anchor += PAGE_SIZE
+                            page += 1
+                            time.sleep(LISTING_DELAY)
 
-            if self.products:
-                break
-            anchor = 0
-            page = 1
+                        if self.products:
+                            return
+                        anchor = 0
+                        page = 1
 
     def load_products_from_html(self) -> None:
         html = self.fetch_html(self.base_url)
