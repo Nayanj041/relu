@@ -4,6 +4,7 @@ from supabase import create_client, Client
 SUPABASE_URL = "https://vpbjmgwqodhuprpovslh.supabase.co"
 SUPABASE_KEY = "sb_publishable_iMCD5saQ85EaP6msbviM2g_XZ9DcV8t"
 
+assert SUPABASE_URL and SUPABASE_KEY, "Supabase env vars missing"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = Flask(__name__)
@@ -263,36 +264,36 @@ HTML_TEMPLATE = """
                         <tr>
                             <td>{{ p.get('id', '') }}</td>
                             <td>
-                                {% if p.get('product_image_url') %}
-                                <img class="thumb" src="{{ p.get('product_image_url') }}" alt="{{ p.get('product_name', '') }}" />
+                                {% if p.get('Product_Image_URL') %}
+                                <img class="thumb" src="{{ p.get('Product_Image_URL') }}" alt="{{ p.get('Product_Name', '') }}" />
                                 {% else %}
                                 <div class="thumb"></div>
                                 {% endif %}
                             </td>
                             <td>
-                                <strong>{{ p.get('product_name', '') }}</strong>
-                                <div class="muted">{{ p.get('product_tagging', '') }}</div>
+                                <strong>{{ p.get('Product_Name', '') }}</strong>
+                                <div class="muted">{{ p.get('Product_Tagging', '') }}</div>
                             </td>
                             <td>
-                                {% if p.get('product_tagging') %}
-                                <span class="tag">{{ p.get('product_tagging') }}</span>
+                                {% if p.get('Product_Tagging') %}
+                                <span class="tag">{{ p.get('Product_Tagging') }}</span>
                                 {% else %}
                                 <span class="muted">-</span>
                                 {% endif %}
                             </td>
-                            <td>{{ p.get('product_description', '') }}</td>
-                            <td>{{ p.get('original_price', '') }}</td>
-                            <td>{{ p.get('discount_price', '') }}</td>
-                            <td>{{ p.get('sizes_available', '') }}</td>
-                            <td>{{ p.get('vouchers', '') }}</td>
-                            <td>{{ p.get('available_colors', '') }}</td>
-                            <td>{{ p.get('color_shown', '') }}</td>
-                            <td>{{ p.get('style_code', '') }}</td>
-                            <td>{{ p.get('rating_score', '') }}</td>
-                            <td>{{ p.get('review_count', '') }}</td>
+                            <td>{{ p.get('Product_Description', '') }}</td>
+                            <td>{{ p.get('Original_Price', '') }}</td>
+                            <td>{{ p.get('Discount_Price', '') }}</td>
+                            <td>{{ p.get('Sizes_Available', '') }}</td>
+                            <td>{{ p.get('Vouchers', '') }}</td>
+                            <td>{{ p.get('Available_Colors', '') }}</td>
+                            <td>{{ p.get('Color_Shown', '') }}</td>
+                            <td>{{ p.get('Style_Code', '') }}</td>
+                            <td>{{ p.get('Rating_Score', '') }}</td>
+                            <td>{{ p.get('Review_Count', '') }}</td>
                             <td>
-                                {% if p.get('product_url') %}
-                                <a class="link" href="{{ p.get('product_url') }}" target="_blank" rel="noopener">Open</a>
+                                {% if p.get('Product_URL') %}
+                                <a class="link" href="{{ p.get('Product_URL') }}" target="_blank" rel="noopener">Open</a>
                                 {% else %}
                                 <span class="muted">-</span>
                                 {% endif %}
@@ -311,7 +312,7 @@ HTML_TEMPLATE = """
 
 @app.route("/")
 def home():
-    data = supabase.table("products").select("*").limit(100).execute()
+    data = supabase.table("products").select("*").execute()
     products = data.data
     return render_template_string(HTML_TEMPLATE, products=products)
 
